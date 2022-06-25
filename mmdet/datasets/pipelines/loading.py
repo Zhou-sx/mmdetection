@@ -213,6 +213,8 @@ class LoadAnnotations:
             Default: True.
         with_mask (bool): Whether to parse and load the mask annotation.
              Default: False.
+        with_keypoint (bool): Whether to parse and load the keypoint annotation.
+            Default: False.
         with_seg (bool): Whether to parse and load the semantic segmentation
             annotation. Default: False.
         poly2mask (bool): Whether to convert the instance masks from polygons
@@ -229,6 +231,7 @@ class LoadAnnotations:
                  with_bbox=True,
                  with_label=True,
                  with_mask=False,
+                 with_keypoint=False,
                  with_seg=False,
                  poly2mask=True,
                  denorm_bbox=False,
@@ -236,6 +239,7 @@ class LoadAnnotations:
         self.with_bbox = with_bbox
         self.with_label = with_label
         self.with_mask = with_mask
+        self.with_keypoint = with_keypoint
         self.with_seg = with_seg
         self.poly2mask = poly2mask
         self.denorm_bbox = denorm_bbox
@@ -268,10 +272,27 @@ class LoadAnnotations:
             results['bbox_fields'].append('gt_bboxes_ignore')
         results['bbox_fields'].append('gt_bboxes')
 
+        results['keypoint_fields'].append('gt_keypoints')
+
         gt_is_group_ofs = ann_info.get('gt_is_group_ofs', None)
         if gt_is_group_ofs is not None:
             results['gt_is_group_ofs'] = gt_is_group_ofs.copy()
 
+        return results
+    
+    def _load_keypoint(self, results):
+        """Private function to load keypoint annotations.
+
+        Args:
+            results (dict): Result dict from :obj:`mmdet.CustomDataset`.
+
+        Returns:
+            dict: The dict contains loaded keypoint annotations.
+        """
+
+        ann_info = results['ann_info']
+        results['gt_keypoints'] = ann_info['keypoints'].copy()
+        results['gt_keypoints_mask'] = ann_info['keypoints_mask'].copy()
         return results
 
     def _load_labels(self, results):
@@ -396,6 +417,8 @@ class LoadAnnotations:
             results = self._load_labels(results)
         if self.with_mask:
             results = self._load_masks(results)
+        if self.with_keypoint:
+            results = self._load_keypoint(results)
         if self.with_seg:
             results = self._load_semantic_seg(results)
         return results

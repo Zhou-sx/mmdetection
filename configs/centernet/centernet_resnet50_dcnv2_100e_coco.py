@@ -7,13 +7,13 @@ model = dict(
     type='CenterNet',
     backbone=dict(
         type='ResNet',
-        depth=18,
+        depth=50,
         norm_eval=False,
         norm_cfg=dict(type='BN'),
-        init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet18')),
+        init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50')),
     neck=dict(
         type='CTResNetNeck',
-        in_channel=512,
+        in_channel=2048,
         num_deconv_filters=(256, 128, 64),
         num_deconv_kernels=(4, 4, 4),
         use_dcn=True),
@@ -30,11 +30,11 @@ model = dict(
 
 # We fixed the incorrect img_norm_cfg problem in the source code.
 img_norm_cfg = dict(
-    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+    mean=[236.92, 238.05, 239.05], std=[33.18, 30.48, 26.97], to_rgb=True)
 
 train_pipeline = [
     dict(type='LoadImageFromFile', to_float32=True, color_type='color'),
-    dict(type='LoadAnnotations', with_bbox=True),
+    dict(type='LoadAnnotations', with_bbox=True, with_keypoint=True),
     dict(
         type='PhotoMetricDistortion',
         brightness_delta=32,
@@ -91,8 +91,8 @@ classes = ('plane',)
 
 # Use RepeatDataset to speed up training
 data = dict(
-    samples_per_gpu=64,
-    workers_per_gpu=4,
+    samples_per_gpu=16,
+    workers_per_gpu=0,
     train=dict(
         _delete_=True,
         type='RepeatDataset',
@@ -128,15 +128,15 @@ optimizer_config = dict(
 lr_config = dict(
     policy='step',
     warmup='linear',
-    warmup_iters=1000,
-    warmup_ratio=1.0 / 1000,
+    warmup_iters=5000,
+    warmup_ratio=1.0 / 5000,
     step=[18, 24])  # the real step is [18*5, 24*5]
-runner = dict(max_epochs=350)  # the real epoch is 28*5=140
+runner = dict(max_epochs=100)  # the real epoch is 100*4=400
 
 # NOTE: `auto_scale_lr` is for automatically scaling LR,
 # USER SHOULD NOT CHANGE ITS VALUES.
-# base_batch_size = (8 GPUs) x (16 samples per GPU)
-auto_scale_lr = dict(base_batch_size=256)
+# base_batch_size = (4 GPUs) x (16 samples per GPU)
+auto_scale_lr = dict(base_batch_size=64)
 
 # loginfo interval
 log_config = dict(
@@ -147,8 +147,8 @@ log_config = dict(
 ])
 
 # checkpoint
-checkpoint_config = dict(interval=5)
+checkpoint_config = dict(interval=10)
 
-resume_from = '/mmdetection/work_dirs/centernet_resnet18_dcnv2_140e_coco/latest.pth'
+resume_from = None
 # 调参区
 optimizer = dict(type='SGD', lr=0.002, momentum=0.9, weight_decay=0.0001)

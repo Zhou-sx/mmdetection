@@ -158,6 +158,8 @@ class CocoDataset(CustomDataset):
         gt_labels = []
         gt_bboxes_ignore = []
         gt_masks_ann = []
+        gt_keypoints = []
+        gt_keypoints_mask = []
         for i, ann in enumerate(ann_info):
             if ann.get('ignore', False):
                 continue
@@ -177,6 +179,15 @@ class CocoDataset(CustomDataset):
                 gt_bboxes.append(bbox)
                 gt_labels.append(self.cat2label[ann['category_id']])
                 gt_masks_ann.append(ann.get('segmentation', None))
+            if ann.get('keypoints', False):
+                num_keypoints = len(ann['keypoints']) // 3
+                keypoints = []
+                keypoints_mask = []
+                for i in range(num_keypoints):
+                    keypoints = keypoints + ann['keypoints'][3*i:3*i+2]
+                    keypoints_mask.append(ann['keypoints'][3*i+2])
+                gt_keypoints.append(keypoints)
+                gt_keypoints_mask.append(keypoints_mask)
 
         if gt_bboxes:
             gt_bboxes = np.array(gt_bboxes, dtype=np.float32)
@@ -184,6 +195,10 @@ class CocoDataset(CustomDataset):
         else:
             gt_bboxes = np.zeros((0, 4), dtype=np.float32)
             gt_labels = np.array([], dtype=np.int64)
+        
+        if gt_keypoints:
+            gt_keypoints = np.array(gt_keypoints, dtype=np.float32)
+            gt_keypoints_mask = np.array(gt_keypoints_mask, dtype=np.int64)
 
         if gt_bboxes_ignore:
             gt_bboxes_ignore = np.array(gt_bboxes_ignore, dtype=np.float32)
@@ -197,7 +212,9 @@ class CocoDataset(CustomDataset):
             labels=gt_labels,
             bboxes_ignore=gt_bboxes_ignore,
             masks=gt_masks_ann,
-            seg_map=seg_map)
+            seg_map=seg_map,
+            keypoints=gt_keypoints,
+            keypoints_mask=gt_keypoints_mask)
 
         return ann
 

@@ -26,6 +26,15 @@ except ImportError:
     albumentations = None
     Compose = None
 
+def draw_test(results):
+    # 测试函数 绘制含关键点的图像
+    num_keypoints = len(results['gt_keypoints'][0]) // 2
+    for j in range(num_keypoints):
+        key_x, key_y = results['gt_keypoints'][0][2*j:2*j+2]
+        img = results['img'].astype(np.int32)
+        cv2.circle(img, (key_x.astype('int32'), key_y.astype('int32')), 1, color=(0, 255, 0))
+    cv2.imwrite('./display.jpg', img)
+
 
 @PIPELINES.register_module()
 class Resize:
@@ -281,6 +290,21 @@ class Resize:
                     interpolation='nearest',
                     backend=self.backend)
             results[key] = gt_seg
+    
+    def _resize_keypoints(self, results):
+        """Resize keypoints with ``results['scale_factor']``."""
+        for key in results.get('keypoint_fields', []):
+            x_factor, y_factor = results['scale_factor'][0:2]
+            for keypoints in results[key]:
+                num_keypoints = len(keypoints) // 2
+                scale_factor = np.repeat(results['scale_factor'][0:2], num_keypoints)
+                keypoints *= scale_factor
+            if self.bbox_clip_border:
+                img_shape = results['img_shape']
+                results[key][:, 0::2] = np.clip(results[key][:, 0::2], 0, img_shape[1])
+                results[key][:, 1::2] = np.clip(results[key][:, 1::2], 0, img_shape[0])
+
+                    
 
     def __call__(self, results):
         """Call function to resize images, bounding boxes, masks, semantic
@@ -317,6 +341,8 @@ class Resize:
         self._resize_bboxes(results)
         self._resize_masks(results)
         self._resize_seg(results)
+        self._resize_keypoints(results)
+        # draw_test(results)
         return results
 
     def __repr__(self):
@@ -427,6 +453,34 @@ class RandomFlip:
             raise ValueError(f"Invalid flipping direction '{direction}'")
         return flipped
 
+    def keypoint_flip(self, keypoints, img_shape, direction):
+        """Flip keypoints horizontally.
+        Args:
+            keypoints (numpy.ndarray): Keypoints, shape (..., 2*k)
+            img_shape (tuple[int]): Image shape (height, width)
+            direction (str): Flip direction. Options are 'horizontal',
+                'vertical'.
+
+        Returns:
+            numpy.ndarray: Flipped keypoints.
+        """
+        flipped = keypoints.copy()
+        if direction == 'horizontal':
+            w = img_shape[1]
+            flipped[..., 0::2] = w - flipped[..., 0::2]
+        elif direction == 'vertical':
+            h = img_shape[0]
+            flipped[..., 1::2] = h - flipped[..., 1::2]
+        elif direction == 'diagonal':
+            w = img_shape[1]
+            h = img_shape[0]
+            flipped[..., 0::2] = w - flipped[..., 0::2]
+            flipped[..., 1::2] = h - flipped[..., 1::2]
+        else:
+            raise ValueError(f"Invalid flipping direction '{direction}'")
+        return flipped
+
+
     def __call__(self, results):
         """Call function to flip bounding boxes, masks, semantic segmentation
         maps.
@@ -480,6 +534,14 @@ class RandomFlip:
             for key in results.get('seg_fields', []):
                 results[key] = mmcv.imflip(
                     results[key], direction=results['flip_direction'])
+
+            # flip keypoints
+            for key in results.get('keypoint_fields', []):
+                results[key] = self.keypoint_flip(results[key],
+                                                  results['img_shape'],
+                                                  results['flip_direction'])
+
+        # draw_test(results)
         return results
 
     def __repr__(self):
@@ -1793,7 +1855,7 @@ class RandomCenterCropPad:
                 for key in results.get('bbox_fields', []):
                     mask = self._filter_boxes(patch, results[key])
                     bboxes = results[key][mask]
-                    bboxes[:, 0:4:2] += cropped_center_x - left_w - x0
+                    bboxes[:, 0:4:2] += cropped_center_x - left_w - x0  # crop与源图像相对偏移由中心点来确定
                     bboxes[:, 1:4:2] += cropped_center_y - top_h - y0
                     if self.bbox_clip_border:
                         bboxes[:, 0:4:2] = np.clip(bboxes[:, 0:4:2], 0, new_w)
@@ -1815,6 +1877,21 @@ class RandomCenterCropPad:
                 for key in results.get('seg_fields', []):
                     raise NotImplementedError(
                         'RandomCenterCropPad only supports bbox.')
+                
+                # crop keypoint like bbox
+                for key in results.get('keypoint_fields', []):
+                    keypoints = results[key]
+                    keypoints[:, 0::2] += cropped_center_x - left_w - x0  # 与bbox类似
+                    keypoints[:, 1::2] += cropped_center_y - top_h - y0
+                    for i in range(len(keypoints)):
+                        num_keypoints = len(keypoints[i]) // 2
+                        for j in range(num_keypoints):
+                            key_x, key_y = keypoints[i][2*j:2*j+2]
+                            if key_x > 0 and key_x < new_w and key_y >0 and key_y < new_h:
+                                results[key][i][2*j:2*j+2] = key_x, key_y
+                            else:
+                                results['gt_keypoints_mask'][i][j] = 1  # 标记了但被遮挡
+                # draw_test(results)
                 return results
 
     def _test_aug(self, results):
