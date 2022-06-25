@@ -176,7 +176,7 @@ class DefaultFormatBundle:
     """Default formatting bundle.
 
     It simplifies the pipeline of formatting common fields, including "img",
-    "proposals", "gt_bboxes", "gt_labels", "gt_masks" and "gt_semantic_seg".
+    "proposals", "gt_bboxes", "gt_labels", "gt_masks", "gt_semantic_seg".
     These fields are formatted as follows.
 
     - img: (1)transpose, (2)to tensor, (3)to DataContainer (stack=True)
@@ -187,6 +187,7 @@ class DefaultFormatBundle:
     - gt_masks: (1)to tensor, (2)to DataContainer (cpu_only=True)
     - gt_semantic_seg: (1)unsqueeze dim-0 (2)to tensor, \
                        (3)to DataContainer (stack=True)
+    - gt_keypoints: (1)to tensor, (2)to DataContainer
 
     Args:
         img_to_float (bool): Whether to force the image to be converted to
@@ -229,7 +230,8 @@ class DefaultFormatBundle:
             img = np.ascontiguousarray(img.transpose(2, 0, 1))
             results['img'] = DC(
                 to_tensor(img), padding_value=self.pad_val['img'], stack=True)
-        for key in ['proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels']:
+        for key in ['proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels',
+                    'gt_keypoints', 'gt_keypoints_mask']:
             if key not in results:
                 continue
             results[key] = DC(to_tensor(results[key]))
@@ -281,7 +283,7 @@ class Collect:
 
     This is usually the last stage of the data loader pipeline. Typically keys
     is set to some subset of "img", "proposals", "gt_bboxes",
-    "gt_bboxes_ignore", "gt_labels", and/or "gt_masks".
+    "gt_bboxes_ignore", "gt_labels", and/or "gt_masks", "gt_keypoints", "gt_keypoints_mask".
 
     The "img_meta" item is always populated.  The contents of the "img_meta"
     dictionary depends on "meta_keys". By default this includes:
