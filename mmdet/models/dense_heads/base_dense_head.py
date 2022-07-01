@@ -306,6 +306,8 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                       gt_bboxes,
                       gt_labels=None,
                       gt_bboxes_ignore=None,
+                      gt_keypoints=None,
+                      gt_keypoints_mask=None,
                       proposal_cfg=None,
                       **kwargs):
         """
@@ -319,6 +321,10 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 shape (num_gts,).
             gt_bboxes_ignore (Tensor): Ground truth bboxes to be
                 ignored, shape (num_ignored_gts, 4).
+            gt_keypoints (Tensor): Ground truth keypoints locations,
+                shape (num_gts, 2*num_keypoints).
+            gt_keypoints_mask (Tensor): Ground truth keypoints mask,
+                shaoe (num_gts, num_keypoints)
             proposal_cfg (mmcv.Config): Test / postprocessing configuration,
                 if None, test_cfg would be used
 
@@ -328,11 +334,14 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 proposal_list (list[Tensor]): Proposals of each image.
         """
         outs = self(x)
+        extra_puts = outs[3:]
         if gt_labels is None:
-            loss_inputs = outs + (gt_bboxes, img_metas)
+            loss_inputs = outs[:3] + (gt_bboxes, img_metas)
         else:
-            loss_inputs = outs + (gt_bboxes, gt_labels, img_metas)
-        losses = self.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
+            loss_inputs = outs[:3] + (gt_bboxes, gt_labels, img_metas)
+        if gt_keypoints is not None:
+            loss_inputs += extra_puts + (gt_keypoints, gt_keypoints_mask) 
+        losses = self.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)  # add keypoints
         if proposal_cfg is None:
             return losses
         else:

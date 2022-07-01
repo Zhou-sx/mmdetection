@@ -3,7 +3,7 @@ import warnings
 
 import torch
 
-from mmdet.core import bbox2result
+from mmdet.core.bbox.transforms import bbox2result, keypoint2result
 from ..builder import DETECTORS, build_backbone, build_head, build_neck
 from .base import BaseDetector
 
@@ -59,7 +59,9 @@ class SingleStageDetector(BaseDetector):
                       img_metas,
                       gt_bboxes,
                       gt_labels,
-                      gt_bboxes_ignore=None):
+                      gt_bboxes_ignore=None,
+                      gt_keypoints=None,
+                      gt_keypoints_mask=None):
         """
         Args:
             img (Tensor): Input images of shape (N, C, H, W).
@@ -81,7 +83,7 @@ class SingleStageDetector(BaseDetector):
         super(SingleStageDetector, self).forward_train(img, img_metas)
         x = self.extract_feat(img)
         losses = self.bbox_head.forward_train(x, img_metas, gt_bboxes,
-                                              gt_labels, gt_bboxes_ignore)
+                                              gt_labels, gt_bboxes_ignore, gt_keypoints, gt_keypoints_mask)
         return losses
 
     def simple_test(self, img, img_metas, rescale=False):
@@ -99,13 +101,17 @@ class SingleStageDetector(BaseDetector):
                 corresponds to each class.
         """
         feat = self.extract_feat(img)
-        results_list = self.bbox_head.simple_test(
+        results_list, results_list2 = self.bbox_head.simple_test(
             feat, img_metas, rescale=rescale)
         bbox_results = [
             bbox2result(det_bboxes, det_labels, self.bbox_head.num_classes)
             for det_bboxes, det_labels in results_list
         ]
-        return bbox_results
+        keypoint_results = [
+            keypoint2result(det_keypoints, det_labels, self.bbox_head.num_classes)
+            for det_keypoints, det_labels in results_list2
+        ]
+        return bbox_results, keypoint_results
 
     def aug_test(self, imgs, img_metas, rescale=False):
         """Test function with test time augmentation.

@@ -308,7 +308,35 @@ class CocoDataset(CustomDataset):
                     segm_json_results.append(data)
         return bbox_json_results, segm_json_results
 
-    def results2json(self, results, outfile_prefix):
+    def _keypoint2json(self, results):
+        """Convert proposal results to COCO json style."""
+        json_results = []
+        for idx in range(len(self)):
+            img_id = self.img_ids[idx]
+            result = results[idx]
+            for label in range(len(result)):
+                keypoints_per_cat = result[label]
+                for i in range(keypoints_per_cat.shape[0]):  # 目标类别
+                    data = dict()
+                    data['image_id'] = img_id
+                    data['category_id'] = self.cat_ids[label]
+                    keypoints = []
+                    score, valid = 0, 0
+                    for j in range(keypoints_per_cat.shape[1]):  # 关键点类别
+                        keypoints.append(keypoints_per_cat[i][j][0])
+                        keypoints.append(keypoints_per_cat[i][j][1])
+                        if keypoints_per_cat[i][j][2] > 0.3 and keypoints_per_cat[i][j][3] > 0.1:
+                            keypoints.append(2)
+                            score += keypoints_per_cat[i][j][3]  # 关键点概率
+                            valid += 1
+                        else:
+                            keypoints.append(0)
+                    data['keypoints'] = keypoints
+                    data['score'] = score / valid if valid != 0 else 0.0
+                    json_results.append(data)
+        return json_results
+
+    def results2json(self, results, outfile_prefix, metric=None):
         """Dump the detection results to a COCO style json file.
 
         There are 3 types of results: proposals, bbox predictions, mask
@@ -322,17 +350,24 @@ class CocoDataset(CustomDataset):
                 prefix is "somepath/xxx", the json files will be named
                 "somepath/xxx.bbox.json", "somepath/xxx.segm.json",
                 "somepath/xxx.proposal.json".
+            metric (str): Default:'bbox'. When in 'keypoint' mode, fill 
+                with 'keypoints'.
 
         Returns:
             dict[str: str]: Possible keys are "bbox", "segm", "proposal", and \
                 values are corresponding filenames.
         """
         result_files = dict()
+        metric = 'bbox' if metric is None else metric
+
         if isinstance(results[0], list):
-            json_results = self._det2json(results)
-            result_files['bbox'] = f'{outfile_prefix}.bbox.json'
-            result_files['proposal'] = f'{outfile_prefix}.bbox.json'
-            mmcv.dump(json_results, result_files['bbox'])
+            if metric == 'bbox':
+                json_results = self._det2json(results)
+            else:
+                json_results = self._keypoint2json(results)
+            result_files[metric] = f'{outfile_prefix}.{metric}.json'
+            result_files['proposal'] = f'{outfile_prefix}.{metric}.json'
+            mmcv.dump(json_results, result_files[metric])
         elif isinstance(results[0], tuple):
             json_results = self._segm2json(results)
             result_files['bbox'] = f'{outfile_prefix}.bbox.json'
@@ -397,7 +432,10 @@ class CocoDataset(CustomDataset):
             jsonfile_prefix = osp.join(tmp_dir.name, 'results')
         else:
             tmp_dir = None
-        result_files = self.results2json(results, jsonfile_prefix)
+        if kwargs is None:
+            result_files = self.results2json(results, jsonfile_prefix)
+        else:
+            result_files = self.results2json(results, jsonfile_prefix, **kwargs)
         return result_files, tmp_dir
 
     def evaluate_det_segm(self,
@@ -419,7 +457,7 @@ class CocoDataset(CustomDataset):
             result_files (dict[str, str]): a dict contains json file path.
             coco_gt (COCO): COCO API object with ground truth annotation.
             metric (str | list[str]): Metrics to be evaluated. Options are
-                'bbox', 'segm', 'proposal', 'proposal_fast'.
+                'bbox', 'segm', 'proposal', 'proposal_fast', 'keypoints'.
             logger (logging.Logger | str | None): Logger used for printing
                 related information during evaluation. Default: None.
             classwise (bool): Whether to evaluating the AP for each class.
@@ -620,7 +658,7 @@ class CocoDataset(CustomDataset):
         Args:
             results (list[list | tuple]): Testing results of the dataset.
             metric (str | list[str]): Metrics to be evaluated. Options are
-                'bbox', 'segm', 'proposal', 'proposal_fast'.
+                'bbox', 'segm', 'proposal', 'proposal_fast', 'keypoints'.
             logger (logging.Logger | str | None): Logger used for printing
                 related information during evaluation. Default: None.
             jsonfile_prefix (str | None): The prefix of json files. It includes
@@ -647,7 +685,7 @@ class CocoDataset(CustomDataset):
         """
 
         metrics = metric if isinstance(metric, list) else [metric]
-        allowed_metrics = ['bbox', 'segm', 'proposal', 'proposal_fast']
+        allowed_metrics = ['bbox', 'segm', 'proposal', 'proposal_fast', 'keypoints']
         for metric in metrics:
             if metric not in allowed_metrics:
                 raise KeyError(f'metric {metric} is not supported')
@@ -655,7 +693,7 @@ class CocoDataset(CustomDataset):
         coco_gt = self.coco
         self.cat_ids = coco_gt.get_cat_ids(cat_names=self.CLASSES)
 
-        result_files, tmp_dir = self.format_results(results, jsonfile_prefix)
+        result_files, tmp_dir = self.format_results(results, jsonfile_prefix, metric=metric)
         eval_results = self.evaluate_det_segm(results, result_files, coco_gt,
                                               metrics, logger, classwise,
                                               proposal_nums, iou_thrs,

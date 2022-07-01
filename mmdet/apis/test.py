@@ -21,12 +21,13 @@ def single_gpu_test(model,
                     show_score_thr=0.3):
     model.eval()
     results = []
+    results_keypoint = []
     dataset = data_loader.dataset
     PALETTE = getattr(dataset, 'PALETTE', None)
     prog_bar = mmcv.ProgressBar(len(dataset))
     for i, data in enumerate(data_loader):
         with torch.no_grad():
-            result = model(return_loss=False, rescale=True, **data)
+            result, result_keypoint = model(return_loss=False, rescale=True, **data)
 
         batch_size = len(result)
         if show or out_dir:
@@ -72,10 +73,11 @@ def single_gpu_test(model,
                                             encode_mask_results(mask_results))
 
         results.extend(result)
+        results_keypoint.extend(result_keypoint)
 
         for _ in range(batch_size):
             prog_bar.update()
-    return results
+    return results, results_keypoint
 
 
 def multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):

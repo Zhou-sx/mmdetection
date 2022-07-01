@@ -41,8 +41,13 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
                  num_classes,
                  loss_center_heatmap=dict(
                      type='GaussianFocalLoss', loss_weight=1.0),
+                 loss_keypoint_heatmap=dict(
+                     type='GaussianFocalLoss', loss_weight=1.0),
                  loss_wh=dict(type='L1Loss', loss_weight=0.1),
                  loss_offset=dict(type='L1Loss', loss_weight=1.0),
+                 loss_keypoint_offset=dict(type='L1Loss', loss_weight=1.0),
+                 loss_keypoint_reg=dict(type='L1Loss', loss_weight=1.0),
+                 num_keypoints=None,
                  train_cfg=None,
                  test_cfg=None,
                  init_cfg=None):
@@ -52,10 +57,20 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
                                              num_classes)
         self.wh_head = self._build_head(in_channel, feat_channel, 2)
         self.offset_head = self._build_head(in_channel, feat_channel, 2)
+        # add 
+        if num_keypoints is not None:
+            self.num_keypoints = num_keypoints
+            self.keypoints_heatmap_head = self._build_head(in_channel, feat_channel, num_keypoints)
+            self.keypoints_offset_head = self._build_head(in_channel, feat_channel, 2)
+            self.keypoints_reg_head = self._build_head(in_channel, feat_channel, 2*num_keypoints)  # 直接回归
 
+            
         self.loss_center_heatmap = build_loss(loss_center_heatmap)
+        self.loss_keypoint_heatmap = build_loss(loss_keypoint_heatmap)
         self.loss_wh = build_loss(loss_wh)
         self.loss_offset = build_loss(loss_offset)
+        self.loss_keypoint_offset = build_loss(loss_keypoint_offset)
+        self.loss_keypoint_reg = build_loss(loss_keypoint_reg)
 
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
@@ -107,10 +122,14 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
             wh_pred (Tensor): wh predicts, the channels number is 2.
             offset_pred (Tensor): offset predicts, the channels number is 2.
         """
-        center_heatmap_pred = self.heatmap_head(feat).sigmoid()
+        center_heatmap_pred = self.heatmap_head(feat).sigmoid()  # 由于pred>0 避免在计算损失时出现Nan
         wh_pred = self.wh_head(feat)
         offset_pred = self.offset_head(feat)
-        return center_heatmap_pred, wh_pred, offset_pred
+        keypoint_heatap_pred = self.keypoints_heatmap_head(feat).sigmoid()
+        keypoint_offset_pred = self.keypoints_offset_head(feat)
+        keypoint_reg_pred = self.keypoints_reg_head(feat)
+        return center_heatmap_pred, wh_pred, offset_pred, keypoint_heatap_pred,\
+               keypoint_offset_pred, keypoint_reg_pred
 
     @force_fp32(apply_to=('center_heatmap_preds', 'wh_preds', 'offset_preds'))
     def loss(self,
@@ -120,6 +139,11 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
              gt_bboxes,
              gt_labels,
              img_metas,
+             keypoints_preds=None,
+             keypoint_offset_preds=None,
+             keypoint_reg_preds=None,
+             gt_keypoints=None,
+             gt_keypoints_mask=None,
              gt_bboxes_ignore=None):
         """Compute losses of the head.
 
@@ -137,6 +161,14 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
                 image size, scaling factor, etc.
             gt_bboxes_ignore (None | list[Tensor]): specify which bounding
                 boxes can be ignored when computing the loss. Default: None
+            # add keypoints
+            keypoints_preds (list[Tensor]): keypoints predicts for all levels with
+                shape (B, 2*num_keypoints, H, W).
+            gt_keypoints (list[Tensor]): Ground truth keypoints for each image with
+                shape (1, 2*num_keypoints) in [x, y] format.
+            gt_keypoints_mask (list[Tensor]): Ground truth keypoints for each image 
+                witt shape (1, num_keypoints) in [x, y] format.
+            
 
         Returns:
             dict[str, Tensor]: which has components below:
@@ -149,8 +181,12 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
         center_heatmap_pred = center_heatmap_preds[0]
         wh_pred = wh_preds[0]
         offset_pred = offset_preds[0]
+        keypoints_pred = keypoints_preds[0]
+        keypoint_offset_pred = keypoint_offset_preds[0]
+        keypoint_reg_pred = keypoint_reg_preds[0]
 
         target_result, avg_factor = self.get_targets(gt_bboxes, gt_labels,
+                                                     gt_keypoints, gt_keypoints_mask,
                                                      center_heatmap_pred.shape,
                                                      img_metas[0]['pad_shape'])
 
@@ -158,27 +194,57 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
         wh_target = target_result['wh_target']
         offset_target = target_result['offset_target']
         wh_offset_target_weight = target_result['wh_offset_target_weight']
+        keypoint_heatmap_target = target_result['keypoint_heatmap_target']
+        keypoint_offset_target = target_result['keypoint_offset_target']
+        keypoint_offset_target_weight = target_result['keypoint_offset_target_weight']
+        keypoint_offset_reg_target = target_result['keypoint_offset_reg_target']
+        keypoint_offset_reg_target_weight = target_result['keypoint_offset_reg_target_weight']
 
         # Since the channel of wh_target and offset_target is 2, the avg_factor
         # of loss_center_heatmap is always 1/2 of loss_wh and loss_offset.
         loss_center_heatmap = self.loss_center_heatmap(
             center_heatmap_pred, center_heatmap_target, avg_factor=avg_factor)
+
+        loss_keypoint_heatmap = self.loss_keypoint_heatmap(
+            keypoints_pred, keypoint_heatmap_target, 
+            avg_factor=avg_factor*self.num_keypoints)        
+        
         loss_wh = self.loss_wh(
             wh_pred,
             wh_target,
             wh_offset_target_weight,
             avg_factor=avg_factor * 2)
+
         loss_offset = self.loss_offset(
             offset_pred,
             offset_target,
             wh_offset_target_weight,
             avg_factor=avg_factor * 2)
+
+        loss_keypoint_offset = self.loss_keypoint_offset(
+            keypoint_offset_pred,
+            keypoint_offset_target,
+            keypoint_offset_target_weight,
+            avg_factor=avg_factor * 2
+        )
+
+        loss_keypoint_reg = self.loss_keypoint_reg(
+            keypoint_reg_pred,
+            keypoint_offset_reg_target,
+            keypoint_offset_reg_target_weight,
+            avg_factor=avg_factor * 2 * self.num_keypoints
+        )
+
         return dict(
             loss_center_heatmap=loss_center_heatmap,
             loss_wh=loss_wh,
-            loss_offset=loss_offset)
+            loss_offset=loss_offset,
+            loss_keypoint_heatmap=loss_keypoint_heatmap,
+            loss_keypoint_offset=loss_keypoint_offset,
+            loss_keypoint_reg=loss_keypoint_reg)
 
-    def get_targets(self, gt_bboxes, gt_labels, feat_shape, img_shape):
+    def get_targets(self, gt_bboxes, gt_labels, gt_keypoints,
+                    gt_keypoints_mask, feat_shape, img_shape):
         """Compute regression and classification targets in multiple images.
 
         Args:
@@ -212,14 +278,29 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
         offset_target = gt_bboxes[-1].new_zeros([bs, 2, feat_h, feat_w])
         wh_offset_target_weight = gt_bboxes[-1].new_zeros(
             [bs, 2, feat_h, feat_w])
+        
+        keypoint_heatmap_target = gt_keypoints[-1].new_zeros(
+            [bs, self.num_keypoints, feat_h, feat_w])
+        keypoint_offset_target = gt_keypoints[-1].new_zeros([bs, 2, feat_h, feat_w])
+        keypoint_offset_target_weight = gt_keypoints[-1].new_zeros(
+            [bs, 2, feat_h, feat_w])
+
+        keypoint_offset_reg_target = gt_keypoints[-1].new_zeros([bs,\
+            2*self.num_keypoints, feat_h, feat_w])
+        keypoint_offset_reg_target_weight = gt_keypoints[-1].new_zeros([bs,\
+            2*self.num_keypoints, feat_h, feat_w])
 
         for batch_id in range(bs):
             gt_bbox = gt_bboxes[batch_id]
             gt_label = gt_labels[batch_id]
+            gt_keypoint = gt_keypoints[batch_id]
+            gt_keypoint_mask = gt_keypoints_mask[batch_id]
             center_x = (gt_bbox[:, [0]] + gt_bbox[:, [2]]) * width_ratio / 2
             center_y = (gt_bbox[:, [1]] + gt_bbox[:, [3]]) * height_ratio / 2
             gt_centers = torch.cat((center_x, center_y), dim=1)
 
+            # add keypoint part(each object has num_keypoints keypoints)
+            # 复用 gaussian_radius
             for j, ct in enumerate(gt_centers):
                 ctx_int, cty_int = ct.int()
                 ctx, cty = ct
@@ -240,12 +321,44 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
 
                 wh_offset_target_weight[batch_id, :, cty_int, ctx_int] = 1
 
+                # add keypoints part
+                for k in range(self.num_keypoints):
+                    if gt_keypoint_mask[j][k] == 2:
+                        keypointx = gt_keypoint[j][k*2] * width_ratio
+                        keypointy = gt_keypoint[j][k*2+1] * height_ratio
+                        keypointx_int, keypointy_int = keypointx.int(), keypointy.int()
+                        
+                        gen_gaussian_target(keypoint_heatmap_target[batch_id, k],
+                                            [keypointx_int, keypointy_int], radius)
+
+                        keypoint_offset_target[batch_id, 0, keypointy_int, keypointx_int]\
+                            = keypointx - keypointx_int
+                        keypoint_offset_target[batch_id, 1, keypointy_int, keypointx_int]\
+                            = keypointy - keypointy_int
+                        
+                        keypoint_offset_target_weight[batch_id, :, keypointy_int, keypointx_int] = 1
+
+                        keypoint_offset_reg_target[batch_id, k*2, cty_int, ctx_int] =\
+                            keypointx - ctx_int
+                        keypoint_offset_reg_target[batch_id, k*2+1, cty_int, ctx_int] =\
+                            keypointy - cty_int
+
+                        keypoint_offset_reg_target_weight[batch_id, k*2:k*2+2, cty_int, ctx_int] = 1
+                    else:
+                        pass
+
+
         avg_factor = max(1, center_heatmap_target.eq(1).sum())
         target_result = dict(
             center_heatmap_target=center_heatmap_target,
             wh_target=wh_target,
             offset_target=offset_target,
-            wh_offset_target_weight=wh_offset_target_weight)
+            wh_offset_target_weight=wh_offset_target_weight,
+            keypoint_heatmap_target=keypoint_heatmap_target,
+            keypoint_offset_target=keypoint_offset_target,
+            keypoint_offset_target_weight=keypoint_offset_target_weight,
+            keypoint_offset_reg_target=keypoint_offset_reg_target,
+            keypoint_offset_reg_target_weight=keypoint_offset_reg_target_weight)
         return target_result, avg_factor
 
     @force_fp32(apply_to=('center_heatmap_preds', 'wh_preds', 'offset_preds'))
@@ -307,9 +420,9 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
             center_heatmap_pred (Tensor): Center heatmap for current level with
                 shape (1, num_classes, H, W).
             wh_pred (Tensor): WH heatmap for current level with shape
-                (1, num_classes, H, W).
+                (1, 2, H, W).
             offset_pred (Tensor): Offset for current level with shape
-                (1, corner_offset_channels, H, W).
+                (1, 2, H, W).
             img_meta (dict): Meta information of current image, e.g.,
                 image size, scaling factor, etc.
             rescale (bool): If True, return boxes in original image space.
@@ -347,6 +460,99 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
             det_bboxes, det_labels = self._bboxes_nms(det_bboxes, det_labels,
                                                       self.test_cfg)
         return det_bboxes, det_labels
+
+    @force_fp32(apply_to=('keypoint_heatmap_preds', 
+                'keypoint_offset_preds', 'keypoint_offset_reg'))
+    def get_keypoints  (self,
+                        center_heatmap_preds,
+                        keypoint_heatmap_preds,
+                        keypoint_offset_preds,
+                        keypoint_offset_reg,
+                        img_metas,
+                        rescale=True):
+        """Transform network output for a batch into bbox predictions.
+
+        Args:
+            keypoint_heatmap_preds (list[Tensor]): Center predict heatmaps for
+                all levels with shape (B, num_keypoints, H, W).
+            keypoint_offset_preds (list[Tensor]): Offset predicts for all levels
+                with shape (B, 2, H, W).
+            keypoint_offset_reg (list[Tensor]): Keypoint relative location to 
+                center with shape (B, 2*num_keypoint, H, W)
+            img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc.
+            rescale (bool): If True, return boxes in original image space.
+                Default: True.
+
+        Returns:
+            list[tuple[Tensor, Tensor]]: Each item in result_list is 2-tuple.
+                The first item is an (k, num_keypoint, 4) tensor, where 4 
+                represent (keypoint_x, keypoint_y, prob_center, prob_keypoint).
+                The shape of the second tensor in the tuple is (k,), and
+                each element represents the class label of the corresponding
+                object.
+        """
+        assert len(keypoint_heatmap_preds) == \
+               len(keypoint_offset_preds) == len(keypoint_offset_reg) == 1
+        result_list = []
+        for img_id in range(len(img_metas)):
+            result_list.append(
+                self._get_keypoint_single(
+                    center_heatmap_preds[0][img_id:img_id + 1, ...],
+                    keypoint_heatmap_preds[0][img_id:img_id + 1, ...],
+                    keypoint_offset_preds[0][img_id:img_id + 1, ...],
+                    keypoint_offset_reg[0][img_id:img_id + 1, ...],
+                    img_metas[img_id],
+                    rescale=rescale))
+        return result_list
+
+    def _get_keypoint_single(self,
+                            center_heatmap_preds,
+                            keypoint_heatmap_preds,
+                            keypoint_offset_preds,
+                            keypoint_offset_reg,
+                            img_meta,
+                            rescale=False):
+        """Transform outputs of a single image into keypoint results.
+
+        Args:
+            center_heatmap_pred (Tensor): Center heatmap for current level with
+                shape (1, num_classes, H, W).
+            keypoint_heatmap_preds (list[Tensor]): Center predict heatmaps for
+                all levels with shape (B, num_keypoints, H, W).
+            keypoint_offset_preds (list[Tensor]): Offset predicts for all levels
+                with shape (B, 2, H, W).
+            keypoint_offset_reg (list[Tensor]): Keypoint relative location to 
+                center with shape (B, 2*num_keypoint, H, W)
+            img_meta (dict): Meta information of current image, e.g.,
+                image size, scaling factor, etc.
+            rescale (bool): If True, return boxes in original image space.
+                Default: False.
+
+        Returns:
+            batch_keypoints (Tensor): Decoded output of keypoint location.keypoints_batch 
+                shape in [k, num_keypoint, 4] format.
+            batch_labels (Tensor): each element represents the class label of the 
+                corresponding object. Shape:[k,]
+        """
+        batch_det_keypoints, batch_labels = self.decode_keypoint_heatmap(
+            center_heatmap_preds,
+            keypoint_heatmap_preds,
+            keypoint_offset_preds,
+            keypoint_offset_reg,
+            img_meta['batch_input_shape'],
+            kernel=self.test_cfg.local_maximum_kernel)
+
+        batch_labels = batch_labels.view(-1)
+        batch_border = batch_det_keypoints[0].new_tensor(img_meta['border'])[...,
+                                                                 [2, 0]]
+        for batch_det_keypoint in batch_det_keypoints:
+            batch_det_keypoint[..., :2] -= batch_border
+            if rescale:
+                batch_det_keypoint[..., :2] /= batch_det_keypoints[0].new_tensor(
+                img_meta['scale_factor'][:2])
+        
+        return batch_det_keypoints, batch_labels
 
     def decode_heatmap(self,
                        center_heatmap_pred,
@@ -398,6 +604,71 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
         batch_bboxes = torch.cat((batch_bboxes, batch_scores[..., None]),
                                  dim=-1)
         return batch_bboxes, batch_topk_labels
+    
+    def decode_keypoint_heatmap(self,
+                                center_heatmap_preds,
+                                keypoint_heatmap_preds,
+                                keypoint_offset_preds,
+                                keypoint_offset_reg,
+                                img_shape,
+                                k=5,
+                                kernel=3):
+        """Transform outputs into detections raw keypoint prediction.
+
+        Args:
+            center_heatmap_preds (Tensor): center predict heatmap,
+               shape (1, num_classes, H, W).
+            keypoint_heatmap_preds (Tensor): keypoint predict heatmap,
+                shape (1, num_keypoint, H, W).
+            keypoint_offset_preds (Tensor): keypoint offset predict, 
+                shape (1, 2, H, W).
+            keypoint_offset_reg (Tensor): Keypoint relative location to 
+                center with shape (1, 2*num_keypoint, H, W).
+            img_shape (list[int]): image shape in [h, w] format.
+            k (int): Get top k center keypoints from heatmap. Default 100.
+            kernel (int): Max pooling kernel for extract local maximum pixels.
+               Default 3.
+
+        Returns:
+            batch_keypoints (Tensor): Decoded output of keypoint location.keypoints_batch shape in [k, num_keypoint, 4] format.
+        """
+        height, width = center_heatmap_preds.shape[2:]
+        inp_h, inp_w = img_shape
+        width_ratio = float(width / inp_w)
+        height_ratio = float(height / inp_h)
+
+        center_heatmap_preds = get_local_maximum(
+            center_heatmap_preds, kernel=kernel)
+
+        *batch_dets, topk_ys, topk_xs = get_topk_from_heatmap(
+            center_heatmap_preds, k=k)  # all num_classes top k
+        batch_scores, batch_index, batch_topk_labels = batch_dets
+        
+        batch_keypoints = []
+        for j in range(self.num_keypoints):
+            # lj_x lj_y
+            offset_reg = transpose_and_gather_feat(
+                keypoint_offset_reg[:, 2*j:2*j+2, :, :], batch_index)
+            lj_x = topk_xs / width_ratio + offset_reg[..., 0] # keypoint location by reg
+            lj_y = topk_ys / height_ratio + offset_reg[..., 1]
+
+            # L_x L_y
+            keypoint_heatmap_preds = get_local_maximum(
+                keypoint_heatmap_preds, kernel=kernel)
+            *batch_dets_tmp, topk_ys_tmp, topk_xs_tmp = get_topk_from_heatmap(
+                keypoint_heatmap_preds[:, j:j+1, :, :], k=k)  # single class top k//5
+            batch_scores_tmp, batch_index_tmp, batch_topk_labels_tmp = batch_dets_tmp
+            
+            keypoint_offset = transpose_and_gather_feat(
+                keypoint_offset_preds, batch_index_tmp)
+            L_x = topk_xs_tmp / width_ratio + keypoint_offset[..., 0] # keypoint location by heatmap
+            L_y = topk_ys_tmp / height_ratio + keypoint_offset[..., 1]
+
+            batch_keypoints.append(self._assign_ltoL(lj_x, lj_y, batch_scores,
+                L_x, L_y, batch_scores_tmp))
+        
+        batch_keypoints = torch.stack(batch_keypoints, dim=1)
+        return batch_keypoints, batch_topk_labels
 
     def _bboxes_nms(self, bboxes, labels, cfg):
         if labels.numel() > 0:
@@ -410,3 +681,40 @@ class CenterNetHead(BaseDenseHead, BBoxTestMixin):
                 labels = labels[keep][:max_num]
 
         return bboxes, labels
+
+    def _assign_ltoL(self,l_xs, l_ys, l_scores, L_xs, L_ys, L_scores):
+        """Assign each regressed location (l_x, l_y) to its closest detected 
+        keypoint(L_x, L_y). Do certain keypoint.
+
+        Args:
+            l_xs, l_ys (Tensor): keypoint reg location predict shape (1, topk1).
+            l_scores (Tensor): keypoint reg prob predict shape (1, topk1).
+            L_xs, L_ys (Tensor): keypoint heatmap location predict shape (1, topk2).
+            L_scores (Tensor): keypoint reg prob predict shape (1, topk2).
+
+        Returns:
+            keypoints_batch (Tensor): keypoint location shape (1, topk1, 4).
+            4 means [keypoint_x, keypoint_y, prob_center, prob_keypoint].
+        """
+        bs, topk1 = l_xs.shape
+        _, topk2 = L_xs.shape
+
+        assert bs == 1
+        l_xs, l_ys = l_xs[0], l_ys[0]
+        L_xs, L_ys = L_xs[0], L_ys[0]
+        l_score, L_scores = l_scores[0], L_scores[0]
+        
+        keypoints = []
+        for j in range(topk1):
+            l_x = l_xs[j]
+            l_y = l_ys[j]
+            dis_min = float('inf')
+            for k in range(topk2):
+                dis_tmp = (L_xs[k] - l_x).pow(2) + (L_ys[k] - l_y).pow(2)
+                # update
+                if dis_tmp < dis_min:
+                    dis_min = dis_tmp
+                    keypoint_x, keypoint_y = L_xs[k], L_ys[k]
+            keypoints.append([keypoint_x, keypoint_y, l_score[j], L_scores[k]])
+        
+        return torch.Tensor(keypoints) 

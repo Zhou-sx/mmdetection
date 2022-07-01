@@ -115,6 +115,7 @@ def roi2bbox(rois):
 
 def bbox2result(bboxes, labels, num_classes):
     """Convert detection results to a list of numpy arrays.
+        bboxes 按照label重组 each class one item
 
     Args:
         bboxes (torch.Tensor | np.ndarray): shape (n, 5)
@@ -131,6 +132,25 @@ def bbox2result(bboxes, labels, num_classes):
             bboxes = bboxes.detach().cpu().numpy()
             labels = labels.detach().cpu().numpy()
         return [bboxes[labels == i, :] for i in range(num_classes)]
+
+def keypoint2result(keypoints, labels, num_classes):
+    """Convert detection results to a list of numpy arrays.
+
+    Args:
+        keypoints (torch.Tensor | np.ndarray): shape (n, 4)
+        labels (torch.Tensor | np.ndarray): shape (n, )
+        num_classes (int): class number, including background class
+    
+    Returns:
+        list(ndarray): keypoint results of each class
+    """
+    if keypoints.shape[0] == 0:
+        return [np.zeros((0, 4), dtype=np.float32) for i in range(num_classes)]
+    else:
+        if isinstance(keypoints, torch.Tensor):
+            keypoints = keypoints.detach().cpu().numpy()
+            labels = labels.detach().cpu().numpy()
+        return [keypoints[labels == i, :] for i in range(num_classes)]
 
 
 def distance2bbox(points, distance, max_shape=None):

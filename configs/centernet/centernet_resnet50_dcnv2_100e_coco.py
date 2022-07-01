@@ -20,11 +20,15 @@ model = dict(
     bbox_head=dict(
         type='CenterNetHead',
         num_classes=1,
+        num_keypoints=5,
         in_channel=64,
         feat_channel=64,
         loss_center_heatmap=dict(type='GaussianFocalLoss', loss_weight=1.0),
+        loss_keypoint_heatmap=dict(type='GaussianFocalLoss', loss_weight=0.2),
         loss_wh=dict(type='L1Loss', loss_weight=0.1),
-        loss_offset=dict(type='L1Loss', loss_weight=1.0)),
+        loss_offset=dict(type='L1Loss', loss_weight=1.0),
+        loss_keypoint_offset=dict(type='L1Loss', loss_weight=1),
+        loss_keypoint_reg=dict(type='L1Loss', loss_weight=1)),
     train_cfg=None,
     test_cfg=dict(topk=100, local_maximum_kernel=3, max_per_img=100))
 
@@ -92,7 +96,7 @@ classes = ('plane',)
 # Use RepeatDataset to speed up training
 data = dict(
     samples_per_gpu=16,
-    workers_per_gpu=0,
+    workers_per_gpu=4,
     train=dict(
         _delete_=True,
         type='RepeatDataset',
@@ -128,8 +132,8 @@ optimizer_config = dict(
 lr_config = dict(
     policy='step',
     warmup='linear',
-    warmup_iters=5000,
-    warmup_ratio=1.0 / 5000,
+    warmup_iters=10000,
+    warmup_ratio=1.0 / 10000,
     step=[18, 24])  # the real step is [18*5, 24*5]
 runner = dict(max_epochs=100)  # the real epoch is 100*4=400
 
@@ -151,4 +155,4 @@ checkpoint_config = dict(interval=10)
 
 resume_from = None
 # 调参区
-optimizer = dict(type='SGD', lr=0.002, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type='SGD', lr=0.001, momentum=0.9, weight_decay=0.0001)

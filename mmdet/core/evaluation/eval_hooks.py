@@ -57,10 +57,13 @@ class EvalHook(BaseEvalHook):
 
         # Changed results to self.results so that MMDetWandbHook can access
         # the evaluation results and log them to wandb.
-        results = single_gpu_test(runner.model, self.dataloader, show=False)
+        results, results_keypoint = single_gpu_test(runner.model, self.dataloader, show=False)
         self.latest_results = results
         runner.log_buffer.output['eval_iter_num'] = len(self.dataloader)
         key_score = self.evaluate(runner, results)
+        self.eval_kwargs['metric'] = 'keypoints'
+        key_score2 = self.evaluate(runner, results_keypoint)  # add keypoint eval
+        
         # the key_score may be `None` so it needs to skip the action to save
         # the best checkpoint
         if self.save_best and key_score:

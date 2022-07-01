@@ -27,16 +27,24 @@ class BBoxTestMixin(object):
                 Defaults to False.
 
         Returns:
-            list[tuple[Tensor, Tensor]]: Each item in result_list is 2-tuple.
-                The first item is ``bboxes`` with shape (n, 5),
-                where 5 represent (tl_x, tl_y, br_x, br_y, score).
+            results_list (list[tuple[Tensor, Tensor]]): Each item in 
+                result_list is 2-tuple. The first item is ``bboxes`` 
+                with shape (n, 5),where 5 represent (tl_x, tl_y, br_x, 
+                br_y, score).The shape of the second tensor in the 
+                tuple is ``labels``with shape (n,)
+            results_list2 (list[tuple[Tensor, Tensor]]): Each item in 
+                result_list is 2-tuple. The first item is ``keypoints`` 
+                with shape (n, num_keypoints, 4),where 4 represent 
+                [keypoint_x, keypoint_y, prob_center, prob_keypoint].
                 The shape of the second tensor in the tuple is ``labels``
                 with shape (n,)
         """
         outs = self.forward(feats)
         results_list = self.get_bboxes(
-            *outs, img_metas=img_metas, rescale=rescale)
-        return results_list
+            *outs[:3], img_metas=img_metas, rescale=rescale)
+        results_list2 = self.get_keypoints(
+            outs[0], *outs[3:], img_metas=img_metas, rescale=rescale)
+        return results_list, results_list2
 
     def aug_test_bboxes(self, feats, img_metas, rescale=False):
         """Test det bboxes with test time augmentation, can be applied in
